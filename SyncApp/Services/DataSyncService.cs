@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
@@ -58,6 +59,41 @@ public class DataSyncService : BackgroundService
         _logger.LogInformation("Data Sync Service stopped");
     }
 
+    /// <summary>
+    /// Safely quotes a SQL identifier (table or column name) to prevent SQL injection
+    /// </summary>
+    private static string QuoteSqlIdentifier(string identifier)
+    {
+        if (string.IsNullOrWhiteSpace(identifier))
+        {
+            throw new ArgumentException("Identifier cannot be null or whitespace", nameof(identifier));
+        }
+
+        // Validate identifier contains only allowed characters
+        if (!Regex.IsMatch(identifier, @"^[\w\.\[\]]+$"))
+        {
+            throw new ArgumentException($"Invalid SQL identifier: {identifier}", nameof(identifier));
+        }
+
+        // If already properly quoted, return as-is
+        if (identifier.StartsWith("[") && identifier.EndsWith("]"))
+        {
+            return identifier;
+        }
+
+        // Split on dot for schema.table notation
+        var parts = identifier.Split('.');
+        var quotedParts = parts.Select(part =>
+        {
+            // Remove existing brackets if any
+            part = part.Trim('[', ']');
+            // Quote the identifier
+            return $"[{part.Replace("]", "]]")}]";
+        });
+
+        return string.Join(".", quotedParts);
+    }
+
     private async Task PerformSync(SyncConfiguration config)
     {
         var sourceConnString = SqlServerService.BuildConnectionString(
@@ -101,28 +137,29 @@ public class DataSyncService : BackgroundService
         // Ensure table exists in cloud database
         await EnsureTableExists(sourceConn, cloudConn, tableName);
 
-        // For incremental sync, we look for a timestamp/modified column
-        // If not available, we do a full sync
-        var hasTimestampColumn = await HasTimestampColumn(sourceConn, tableName);
+        // For incremental sync, we look for timestamp/modified columns
+        var timestampColumns = await GetTimestampColumns(sourceConn, tableName);
+        
+        // Safely quote the table name to prevent SQL injection
+        var quotedTableName = QuoteSqlIdentifier(tableName);
         
         string query;
-        if (hasTimestampColumn && lastSyncTime.HasValue)
+        if (timestampColumns.Count > 0 && lastSyncTime.HasValue)
         {
-            // Incremental sync based on ModifiedDate or similar column
-            query = $@"
-                SELECT * FROM {tableName}
-                WHERE ModifiedDate > @LastSyncTime 
-                   OR CreatedDate > @LastSyncTime
-                   OR (ModifiedDate IS NULL AND CreatedDate > @LastSyncTime)";
+            // Build incremental sync query using actual column names found
+            var conditions = timestampColumns.Select(col => $"[{col.Replace("]", "]]")}] > @LastSyncTime");
+            var whereClause = string.Join(" OR ", conditions);
+            
+            query = $@"SELECT * FROM {quotedTableName} WHERE {whereClause}";
         }
         else
         {
             // Full sync - get all data
-            query = $"SELECT * FROM {tableName}";
+            query = $"SELECT * FROM {quotedTableName}";
         }
 
         using var sourceCmd = new SqlCommand(query, sourceConn);
-        if (hasTimestampColumn && lastSyncTime.HasValue)
+        if (timestampColumns.Count > 0 && lastSyncTime.HasValue)
         {
             sourceCmd.Parameters.AddWithValue("@LastSyncTime", lastSyncTime.Value);
         }
@@ -140,28 +177,71 @@ public class DataSyncService : BackgroundService
 
     private async Task<bool> HasTimestampColumn(SqlConnection connection, string tableName)
     {
-        var query = $@"
+        // Parse schema and table name safely
+        var parts = tableName.Split('.');
+        string schema = parts.Length > 1 ? parts[0] : "dbo";
+        string table = parts.Length > 1 ? parts[1] : parts[0];
+
+        var query = @"
             SELECT COUNT(*) 
             FROM INFORMATION_SCHEMA.COLUMNS 
-            WHERE TABLE_NAME = '{tableName.Replace("'", "''")}' 
+            WHERE TABLE_SCHEMA = @Schema
+            AND TABLE_NAME = @TableName
             AND (COLUMN_NAME = 'ModifiedDate' OR COLUMN_NAME = 'CreatedDate' OR COLUMN_NAME = 'LastModified')";
 
         using var cmd = new SqlCommand(query, connection);
+        cmd.Parameters.AddWithValue("@Schema", schema);
+        cmd.Parameters.AddWithValue("@TableName", table);
+        
         var result = await cmd.ExecuteScalarAsync();
         var count = result != null ? Convert.ToInt32(result) : 0;
         return count > 0;
     }
 
+    private async Task<List<string>> GetTimestampColumns(SqlConnection connection, string tableName)
+    {
+        var parts = tableName.Split('.');
+        string schema = parts.Length > 1 ? parts[0] : "dbo";
+        string table = parts.Length > 1 ? parts[1] : parts[0];
+
+        var query = @"
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = @Schema
+            AND TABLE_NAME = @TableName
+            AND (COLUMN_NAME = 'ModifiedDate' OR COLUMN_NAME = 'CreatedDate' OR COLUMN_NAME = 'LastModified')";
+
+        using var cmd = new SqlCommand(query, connection);
+        cmd.Parameters.AddWithValue("@Schema", schema);
+        cmd.Parameters.AddWithValue("@TableName", table);
+        
+        var columns = new List<string>();
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            columns.Add(reader.GetString(0));
+        }
+        return columns;
+    }
+
     private async Task EnsureTableExists(SqlConnection sourceConn, SqlConnection cloudConn, string tableName)
     {
-        // Get table schema from source
-        var schemaQuery = $@"
+        // Parse schema and table name safely
+        var parts = tableName.Split('.');
+        string schema = parts.Length > 1 ? parts[0] : "dbo";
+        string table = parts.Length > 1 ? parts[1] : parts[0];
+
+        // Get table schema from source using parameterized query
+        var schemaQuery = @"
             SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE
             FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_NAME = '{tableName.Replace("'", "''")}'
+            WHERE TABLE_SCHEMA = @Schema AND TABLE_NAME = @TableName
             ORDER BY ORDINAL_POSITION";
 
         using var schemaCmd = new SqlCommand(schemaQuery, sourceConn);
+        schemaCmd.Parameters.AddWithValue("@Schema", schema);
+        schemaCmd.Parameters.AddWithValue("@TableName", table);
+        
         using var reader = await schemaCmd.ExecuteReaderAsync();
         
         var columns = new List<string>();
@@ -172,7 +252,7 @@ public class DataSyncService : BackgroundService
             var maxLength = reader.IsDBNull(2) ? (int?)null : reader.GetInt32(2);
             var isNullable = reader.GetString(3);
 
-            var columnDef = $"[{columnName}] {dataType}";
+            var columnDef = $"[{columnName.Replace("]", "]]")}] {dataType}";
             if (maxLength.HasValue && (dataType.ToLower() == "varchar" || dataType.ToLower() == "nvarchar" || dataType.ToLower() == "char" || dataType.ToLower() == "nchar"))
             {
                 columnDef += maxLength.Value == -1 ? "(MAX)" : $"({maxLength.Value})";
@@ -185,21 +265,25 @@ public class DataSyncService : BackgroundService
 
         if (columns.Count > 0)
         {
-            // Check if table exists in cloud
-            var checkTableQuery = $@"
+            // Check if table exists in cloud using parameterized query
+            var checkTableQuery = @"
                 SELECT COUNT(*) 
                 FROM INFORMATION_SCHEMA.TABLES 
-                WHERE TABLE_NAME = '{tableName.Replace("'", "''")}'";
+                WHERE TABLE_SCHEMA = @Schema AND TABLE_NAME = @TableName";
 
             using var checkCmd = new SqlCommand(checkTableQuery, cloudConn);
+            checkCmd.Parameters.AddWithValue("@Schema", schema);
+            checkCmd.Parameters.AddWithValue("@TableName", table);
+            
             var result = await checkCmd.ExecuteScalarAsync();
             var tableExists = result != null && Convert.ToInt32(result) > 0;
 
             if (!tableExists)
             {
-                // Create table in cloud database
+                // Create table in cloud database using safely quoted identifier
+                var quotedTableName = QuoteSqlIdentifier(tableName);
                 var createTableQuery = $@"
-                    CREATE TABLE [{tableName}] (
+                    CREATE TABLE {quotedTableName} (
                         {string.Join(",\n                        ", columns)}
                     )";
 
@@ -211,8 +295,11 @@ public class DataSyncService : BackgroundService
 
     private async Task BulkInsertData(SqlConnection connection, string tableName, DataTable dataTable)
     {
+        // Validate and quote the table name to prevent SQL injection
+        var quotedTableName = QuoteSqlIdentifier(tableName);
+        
         using var bulkCopy = new SqlBulkCopy(connection);
-        bulkCopy.DestinationTableName = tableName;
+        bulkCopy.DestinationTableName = quotedTableName;
         bulkCopy.BulkCopyTimeout = 300; // 5 minutes timeout
         
         // Map columns

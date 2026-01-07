@@ -137,6 +137,22 @@ Configuration is stored in JSON format at:
 - Check Windows Event Logs for application errors
 - Try running as Administrator if permission issues occur
 
+## Important Security Considerations
+
+⚠️ **CRITICAL**: This application stores database passwords in **plain text** in the configuration file (`%APPDATA%\SyncApp\config.json`). This is a significant security risk.
+
+### Recommendations for Production Use
+
+1. **Use Windows Authentication** whenever possible to avoid storing passwords
+2. **File System Permissions**: Ensure the config file has restrictive permissions (user-only access)
+3. **Encryption**: For production deployments, consider implementing credential encryption
+4. **Secure Connections**: Use VPN or SSL/TLS for connections to cloud databases
+5. **Access Control**: Limit database user permissions to only what's necessary
+6. **Password Rotation**: Regularly rotate passwords and update configuration
+7. **Alternative Solutions**: Consider using Windows Credential Manager or Azure Key Vault for production
+
+This application is intended for demonstration and development purposes. For production use, implement proper credential encryption or use managed identity/integrated authentication solutions.
+
 ## License
 
 This project is provided as-is for demonstration purposes.
