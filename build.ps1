@@ -13,15 +13,15 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "Build successful!" -ForegroundColor Green
 
-# Create package directory
-$packageDir = ".\Package"
+# Create package directory using script location
+$packageDir = Join-Path $PSScriptRoot "Package"
 if (Test-Path $packageDir) {
     Remove-Item $packageDir -Recurse -Force
 }
 New-Item -ItemType Directory -Path $packageDir | Out-Null
 
 # Copy build output
-$sourceDir = ".\SyncApp\bin\Release\net8.0-windows"
+$sourceDir = Join-Path $PSScriptRoot "SyncApp\bin\Release\net8.0-windows"
 Copy-Item -Path "$sourceDir\*" -Destination $packageDir -Recurse
 
 Write-Host "Package created in $packageDir" -ForegroundColor Green

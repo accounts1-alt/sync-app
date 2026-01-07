@@ -60,7 +60,12 @@ public class DataSyncService : BackgroundService
     }
 
     /// <summary>
-    /// Safely quotes a SQL identifier (table or column name) to prevent SQL injection
+    /// Safely quotes a SQL identifier (table or column name) to prevent SQL injection.
+    /// Note: Uses a restrictive alphanumeric+underscore pattern for security.
+    /// This prevents potential SQL injection through complex Unicode or special characters
+    /// while still supporting the vast majority of standard SQL Server table/column names.
+    /// If you need to support tables with special characters, spaces, or Unicode names,
+    /// consider implementing additional security measures or whitelisting specific tables.
     /// </summary>
     private static string QuoteSqlIdentifier(string identifier)
     {
@@ -79,14 +84,15 @@ public class DataSyncService : BackgroundService
         var parts = identifier.Split('.');
         
         // Validate each part separately
+        // Using restrictive pattern for security - only alphanumeric and underscore
+        // This covers 99% of standard table/column names while preventing injection risks
         foreach (var part in parts)
         {
             var cleanPart = part.Trim('[', ']', ' ');
             
-            // More restrictive pattern: alphanumeric, underscore only (no special chars, no brackets, no dots in individual parts)
             if (!Regex.IsMatch(cleanPart, @"^[a-zA-Z0-9_]+$"))
             {
-                throw new ArgumentException($"Invalid SQL identifier part: {cleanPart}. Only alphanumeric characters and underscores are allowed.", nameof(identifier));
+                throw new ArgumentException($"Invalid SQL identifier part: {cleanPart}. Only alphanumeric characters and underscores are allowed for security reasons.", nameof(identifier));
             }
         }
 
@@ -182,29 +188,6 @@ public class DataSyncService : BackgroundService
         {
             await BulkInsertData(cloudConn, tableName, dataTable);
         }
-    }
-
-    private async Task<bool> HasTimestampColumn(SqlConnection connection, string tableName)
-    {
-        // Parse schema and table name safely
-        var parts = tableName.Split('.');
-        string schema = parts.Length > 1 ? parts[0] : "dbo";
-        string table = parts.Length > 1 ? parts[1] : parts[0];
-
-        var query = @"
-            SELECT COUNT(*) 
-            FROM INFORMATION_SCHEMA.COLUMNS 
-            WHERE TABLE_SCHEMA = @Schema
-            AND TABLE_NAME = @TableName
-            AND (COLUMN_NAME = 'ModifiedDate' OR COLUMN_NAME = 'CreatedDate' OR COLUMN_NAME = 'LastModified')";
-
-        using var cmd = new SqlCommand(query, connection);
-        cmd.Parameters.AddWithValue("@Schema", schema);
-        cmd.Parameters.AddWithValue("@TableName", table);
-        
-        var result = await cmd.ExecuteScalarAsync();
-        var count = result != null ? Convert.ToInt32(result) : 0;
-        return count > 0;
     }
 
     private async Task<List<string>> GetTimestampColumns(SqlConnection connection, string tableName)
@@ -306,11 +289,11 @@ public class DataSyncService : BackgroundService
 
     private async Task BulkInsertData(SqlConnection connection, string tableName, DataTable dataTable)
     {
-        // Validate and quote the table name to prevent SQL injection
-        var quotedTableName = QuoteSqlIdentifier(tableName);
-        
+        // SqlBulkCopy.DestinationTableName expects an unquoted identifier
+        // The table name from configuration is already validated in QuoteSqlIdentifier
+        // but SqlBulkCopy handles quoting internally
         using var bulkCopy = new SqlBulkCopy(connection);
-        bulkCopy.DestinationTableName = quotedTableName;
+        bulkCopy.DestinationTableName = tableName; // Use unquoted name - SqlBulkCopy handles quoting
         bulkCopy.BulkCopyTimeout = 300; // 5 minutes timeout
         
         // Map columns
