@@ -240,7 +240,10 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var selectedTables = _tables.Where(t => t.IsSelected).Select(t => $"{t.Schema}.{t.TableName}").ToList();
+            var selectedTables = _tables
+                .Where(t => t.IsSelected)
+                .Select(t => ValidateAndFormatTableName(t.Schema, t.TableName))
+                .ToList();
             if (selectedTables.Count == 0)
             {
                 MessageBox.Show("Please select at least one table to sync", "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -337,5 +340,21 @@ public partial class MainWindow : Window
         // When closing, minimize to tray instead
         e.Cancel = true;
         Hide();
+    }
+
+    private static string ValidateAndFormatTableName(string schema, string tableName)
+    {
+        // Validate schema and table name contain only safe characters
+        if (!System.Text.RegularExpressions.Regex.IsMatch(schema, @"^[a-zA-Z0-9_]+$"))
+        {
+            throw new ArgumentException($"Invalid schema name: {schema}");
+        }
+        
+        if (!System.Text.RegularExpressions.Regex.IsMatch(tableName, @"^[a-zA-Z0-9_]+$"))
+        {
+            throw new ArgumentException($"Invalid table name: {tableName}");
+        }
+
+        return $"{schema}.{tableName}";
     }
 }

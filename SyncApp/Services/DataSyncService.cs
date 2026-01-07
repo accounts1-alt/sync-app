@@ -69,26 +69,34 @@ public class DataSyncService : BackgroundService
             throw new ArgumentException("Identifier cannot be null or whitespace", nameof(identifier));
         }
 
-        // Validate identifier contains only allowed characters
-        if (!Regex.IsMatch(identifier, @"^[\w\.\[\]]+$"))
-        {
-            throw new ArgumentException($"Invalid SQL identifier: {identifier}", nameof(identifier));
-        }
-
-        // If already properly quoted, return as-is
+        // If already properly quoted, validate and return
         if (identifier.StartsWith("[") && identifier.EndsWith("]"))
         {
-            return identifier;
+            identifier = identifier.Substring(1, identifier.Length - 2);
         }
 
         // Split on dot for schema.table notation
         var parts = identifier.Split('.');
+        
+        // Validate each part separately
+        foreach (var part in parts)
+        {
+            var cleanPart = part.Trim('[', ']', ' ');
+            
+            // More restrictive pattern: alphanumeric, underscore only (no special chars, no brackets, no dots in individual parts)
+            if (!Regex.IsMatch(cleanPart, @"^[a-zA-Z0-9_]+$"))
+            {
+                throw new ArgumentException($"Invalid SQL identifier part: {cleanPart}. Only alphanumeric characters and underscores are allowed.", nameof(identifier));
+            }
+        }
+
+        // Quote each part
         var quotedParts = parts.Select(part =>
         {
-            // Remove existing brackets if any
-            part = part.Trim('[', ']');
-            // Quote the identifier
-            return $"[{part.Replace("]", "]]")}]";
+            // Remove any existing brackets and trim
+            var cleanPart = part.Trim('[', ']', ' ');
+            // Quote the identifier (double any existing ] chars for safety)
+            return $"[{cleanPart.Replace("]", "]]")}]";
         });
 
         return string.Join(".", quotedParts);
@@ -147,7 +155,8 @@ public class DataSyncService : BackgroundService
         if (timestampColumns.Count > 0 && lastSyncTime.HasValue)
         {
             // Build incremental sync query using actual column names found
-            var conditions = timestampColumns.Select(col => $"[{col.Replace("]", "]]")}] > @LastSyncTime");
+            // Quote each column name for safety
+            var conditions = timestampColumns.Select(col => $"{QuoteSqlIdentifier(col)} > @LastSyncTime");
             var whereClause = string.Join(" OR ", conditions);
             
             query = $@"SELECT * FROM {quotedTableName} WHERE {whereClause}";
@@ -252,7 +261,9 @@ public class DataSyncService : BackgroundService
             var maxLength = reader.IsDBNull(2) ? (int?)null : reader.GetInt32(2);
             var isNullable = reader.GetString(3);
 
-            var columnDef = $"[{columnName.Replace("]", "]]")}] {dataType}";
+            // Use QuoteSqlIdentifier for consistency and security
+            var quotedColumnName = QuoteSqlIdentifier(columnName);
+            var columnDef = $"{quotedColumnName} {dataType}";
             if (maxLength.HasValue && (dataType.ToLower() == "varchar" || dataType.ToLower() == "nvarchar" || dataType.ToLower() == "char" || dataType.ToLower() == "nchar"))
             {
                 columnDef += maxLength.Value == -1 ? "(MAX)" : $"({maxLength.Value})";
