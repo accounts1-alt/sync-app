@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="SyncApp" 
+           Manufacturer="SyncApp Inc." 
+           Version="1.0.0.0" 
+           UpgradeCode="12345678-1234-1234-1234-123456789012">
+    
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="ProductFeature" Title="SyncApp" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+
+    <!-- Directory Structure -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="SyncApp">
+        <Component Id="MainExecutable" Bitness="always64">
+          <File Id="SyncAppExe" 
+                Source="$(var.SyncApp.TargetPath)" 
+                KeyPath="yes">
+            <Shortcut Id="DesktopShortcut" 
+                      Directory="DesktopFolder" 
+                      Name="Sync App" 
+                      WorkingDirectory="INSTALLFOLDER" 
+                      Icon="SyncApp.exe" 
+                      IconIndex="0" 
+                      Advertise="yes" />
+            <Shortcut Id="StartMenuShortcut" 
+                      Directory="ProgramMenuDir" 
+                      Name="Sync App" 
+                      WorkingDirectory="INSTALLFOLDER" 
+                      Icon="SyncApp.exe" 
+                      IconIndex="0" 
+                      Advertise="yes" />
+          </File>
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder" />
+    
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ProgramMenuDir" Name="SyncApp">
+        <Component Id="ProgramMenuDir" Bitness="always64">
+          <RemoveFolder Id="ProgramMenuDir" On="uninstall" />
+          <RegistryValue Root="HKCU" 
+                        Key="Software\SyncApp" 
+                        Name="installed" 
+                        Type="integer" 
+                        Value="1" 
+                        KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Component Group for all application files -->
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <!-- Additional components will be added here by build process -->
+    </ComponentGroup>
+
+    <!-- Icon -->
+    <Icon Id="SyncApp.exe" SourceFile="$(var.SyncApp.TargetPath)" />
+  </Package>
+</Wix>
