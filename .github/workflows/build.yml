@@ -1,0 +1,124 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ created ]
+
+jobs:
+  validate-build:
+    name: Validate Build (Linux)
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+    
+    - name: Restore dependencies
+      run: dotnet restore SyncApp.sln
+    
+    - name: Build
+      run: dotnet build SyncApp.sln --configuration Release --no-restore
+    
+    - name: Display build info
+      run: |
+        echo "✅ Build validation successful"
+        echo "Note: EXE generation requires Windows build (see build-windows job)"
+
+  build-windows:
+    name: Build Application (Windows)
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+    
+    - name: Restore dependencies
+      run: dotnet restore SyncApp.sln
+    
+    - name: Build
+      run: dotnet build SyncApp.sln --configuration Release --no-restore
+    
+    - name: Publish Portable
+      run: dotnet publish SyncApp/SyncApp.csproj -c Release -o ./publish-portable --no-build
+    
+    - name: Publish Standalone
+      run: dotnet publish SyncApp/SyncApp.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./publish-standalone
+    
+    - name: Upload Portable Build
+      uses: actions/upload-artifact@v4
+      with:
+        name: SyncApp-Portable
+        path: ./publish-portable
+        retention-days: 30
+    
+    - name: Upload Standalone Build
+      uses: actions/upload-artifact@v4
+      with:
+        name: SyncApp-Standalone
+        path: ./publish-standalone
+        retention-days: 30
+    
+    - name: Create ZIP packages
+      if: github.event_name == 'release'
+      run: |
+        Compress-Archive -Path ./publish-portable/* -DestinationPath SyncApp-Portable.zip
+        Compress-Archive -Path ./publish-standalone/* -DestinationPath SyncApp-Standalone.zip
+    
+    - name: Upload Release Assets
+      if: github.event_name == 'release'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./SyncApp-Portable.zip
+        asset_name: SyncApp-Portable.zip
+        asset_content_type: application/zip
+
+  build-installer:
+    name: Build Windows Installer
+    runs-on: windows-latest
+    needs: build-windows
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+    
+    - name: Install WiX
+      run: dotnet tool install --global wix --version 4.0.5
+    
+    - name: Restore dependencies
+      run: dotnet restore SyncApp.sln
+    
+    - name: Build Application
+      run: dotnet build SyncApp.sln --configuration Release
+    
+    - name: Build Installer
+      run: |
+        dotnet sln add Installer/Installer.wixproj
+        dotnet build Installer/Installer.wixproj --configuration Release
+      continue-on-error: true
+    
+    - name: Upload Installer
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: SyncApp-Installer
+        path: Installer/bin/Release/*.msi
+        retention-days: 30
